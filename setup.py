@@ -16,9 +16,9 @@ skj_mod = Extension('_skeletonjelly',
     library_dirs = [OPENNI_LIB],
     libraries = ['openni'],
     language = 'c++',
-    swig_opts=['-c++', '-outcurrentdir'],
-#    extra_compile_args = ['/Zi', '/EHsc'],
-#    extra_link_args = ['/DEBUG'],
+    swig_opts=['-c++'],
+    extra_compile_args = ['/Zi', '/EHsc'],
+    extra_link_args = ['/DEBUG'],
 )
 
 setup(name = "skeletonjelly",

@@ -42,11 +42,18 @@ class Kinect
 {
 
 public:
-	enum RenderingMode
+	enum RenderFormat
 	{
-		RENDER_DISABLED,
-		RENDER_DEPTH_FRAME,
-		RENDER_SILHOUETTE
+		RENDER_RGBA,
+		RENDER_RGB
+	};
+
+	enum SensorMode
+	{
+		SENSOR_DISABLED = 0, /* no video */
+		SENSOR_QVGA_60FPS, /* 320x240 */
+		SENSOR_VGA_30FPS, /* 640x480 */
+		SENSOR_SXGA_15FPS /* 1280x1024 */
 	};
 
     enum UserStatus 
@@ -77,7 +84,7 @@ public:
 private:
 	static const int MAX_DEPTH = 4096;
 	static const int DEPTH_MASK = MAX_DEPTH - 1;
-	static const int MAX_USERS = 8;
+	static const int MAX_USERS = 3;
 
     friend void XN_CALLBACK_TYPE cb_newUser(xn::UserGenerator& generator, XnUserID nId, void *pCookie);
     friend void XN_CALLBACK_TYPE cb_lostUser(xn::UserGenerator& generator, XnUserID nId, void *pCookie);
@@ -100,19 +107,9 @@ private:
 	bool _autoTrack;
 	bool _gotImage;
 
-	struct
-	{
-		unsigned int histogram[MAX_DEPTH]; 
-		unsigned char *buffer;
-
-		XnUInt32XYPair res;
-		int pitch;
-
-		RenderingMode renderMode;
-	} _frame;
-
-    void calculateHistogram(const XnDepthPixel *depth_pixels);
-	void renderDepthFrame();
+	RenderFormat _renderFormat;
+    unsigned int _histogram[MAX_DEPTH]; 
+    void calculateHistogram(int resolutionX, int resolutionY, const XnDepthPixel *depth_pixels);
 
     void onNewUser(XnUserID nId);
     void onLostUser(XnUserID nId);
@@ -148,12 +145,7 @@ public:
 	void stopThread();
 	bool isThreaded();
 
-	XnStatus init(
-		int width = KINECT_DEFAULT_WIDTH,
-		int height = KINECT_DEFAULT_HEIGHT,
-		int fps = KINECT_DEFAULT_FPS, 
-		bool imageNode = false
-	);
+	XnStatus init(SensorMode depthSensor = SENSOR_VGA_30FPS, SensorMode imageSensor = SENSOR_DISABLED);
 
 	XnStatus resetUser(XnUserID id = KINECT_DEFAULT_USER);
 	XnStatus trackUser(XnUserID id = KINECT_DEFAULT_USER);
@@ -165,9 +157,16 @@ public:
 	void setEventCallback(Callback callback, void *userData);
 	char const* errorMessage();
 
-	void setRenderMode(RenderingMode m);
-	const XnUInt32XYPair *getFrameResolution();
-	XnStatus setRenderTarget(unsigned char *buffer, unsigned int size, int pitch);
+	void renderImage(unsigned char *buffer, int pitch);
+	void renderDepth(unsigned char *buffer, bool background, int pitch);
+
+	unsigned int getImageTexSize(int pitch = 0);
+	unsigned int getDepthTexSize(int pitch = 0);
+
+	XnUInt32XYPair getDepthResolution();
+	XnUInt32XYPair getImageResolution();
+
+	void setRenderFormat(RenderFormat format);
 };
 
 #endif

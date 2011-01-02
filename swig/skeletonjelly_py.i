@@ -40,12 +40,8 @@
     Py_DECREF(ctypes);
 }
 
-%typemap(out) XnUInt32XYPair* {
-    if ($1 == NULL) {
-        $result = Py_BuildValue("");
-    } else {
-        $result = Py_BuildValue("(ii)", $1->X, $1->Y);
-    }
+%typemap(out) XnUInt32XYPair {
+    $result = Py_BuildValue("(ii)", $1.X, $1.Y);
 }
 
 %typemap(out) XnPoint3D* {

@@ -1,5 +1,7 @@
 #include "skeletonjelly.hpp"
 
+static const char FORMAT_BPP[2] = {4, 3};
+
 #define CHECK_RC(x) {\
 	if (x != XN_STATUS_OK)\
 		return x;\
@@ -38,8 +40,8 @@ Kinect::Kinect()
 	_paused = false;
 	_autoTrack = true;
 
-	_frame.renderMode = RENDER_DISABLED;
-	_frame.buffer = 0;
+	_gotImage = false;
+	_renderFormat = RENDER_RGBA;
 
 	_tickTime = 1000 / 30;
 
@@ -67,17 +69,27 @@ Kinect::~Kinect()
 	_context.Shutdown();
 }
 
-XnStatus Kinect::init(int width, int height, int fps, bool imageNode)
+XnStatus Kinect::init(SensorMode depthMode, SensorMode imageMode)
 {
-	XnMapOutputMode output = {width, height, fps};
+	XnMapOutputMode sensorModes[] =
+	{
+		{ 0, 0, 0 }, /* SENSOR_DISABLED */
+		{ 320, 240, 60 }, /* SENSOR_QVGA */
+		{ 640, 480, 30 }, /* SENSOR_VGA */
+		{ 1280, 1024, 10 } /* SENSOR_SXGA */
+	};
+
 	xn::Query qDepth, qImage;
 	XnCallbackHandle cb_user, cb_calibration, cb_pose;
 
+	if (depthMode == SENSOR_DISABLED)
+		return XN_STATUS_NOT_IMPLEMENTED;
+
 	qDepth.AddSupportedCapability(XN_CAPABILITY_MIRROR);
-	qDepth.AddSupportedMapOutputMode(output);
+	qDepth.AddSupportedMapOutputMode(sensorModes[depthMode]);
 
 	qImage.AddSupportedCapability(XN_CAPABILITY_MIRROR);
-	qImage.AddSupportedMapOutputMode(output);
+	qImage.AddSupportedMapOutputMode(sensorModes[imageMode]);
 
 	_error = _context.Init();
 	CHECK_RC(_error);
@@ -87,24 +99,25 @@ XnStatus Kinect::init(int width, int height, int fps, bool imageNode)
     	_error = _depth.Create(_context, &qDepth);
     	CHECK_RC(_error);
     
-    	_error = _depth.SetMapOutputMode(output);
+    	_error = _depth.SetMapOutputMode(sensorModes[depthMode]);
     	CHECK_RC(_error);
 
 		_depth.GetMirrorCap().SetMirror(true);
 	}
 
-	if (imageNode) /* init image generator */
+	if (imageMode != SENSOR_DISABLED) /* init image generator */
 	{
     	_error = _image.Create(_context, &qImage);
     	CHECK_RC(_error);
     
-    	_error = _image.SetMapOutputMode(output);
+    	_error = _image.SetMapOutputMode(sensorModes[imageMode]);
     	CHECK_RC(_error);
     
     	_error = _image.SetPixelFormat(XN_PIXEL_FORMAT_RGB24);
     	CHECK_RC(_error);
 
 		_image.GetMirrorCap().SetMirror(true);
+		_gotImage = true;
 	}
 
 	/* init user generator */
@@ -135,9 +148,6 @@ XnStatus Kinect::init(int width, int height, int fps, bool imageNode)
 	_error = _context.StartGeneratingAll();
 	CHECK_RC(_error);
 
-    _frame.res.X = output.nXRes;
-    _frame.res.Y = output.nYRes;
-
 	_init = true;
 	return XN_STATUS_OK;
 }
@@ -152,9 +162,6 @@ void Kinect::tick()
 	for (int i = 0; i < MAX_USERS; ++i)
 		if (_userData[i] != 0)
 			updateUserData(i, _userData[i]);
-
-	if (_frame.renderMode != RENDER_DISABLED)
-		renderDepthFrame();
 
 	int sleep_time = nextTick - GetTickCount();
 	if (sleep_time > 0)
@@ -278,13 +285,11 @@ void Kinect::onCalibrationEnd(XnUserID id, XnBool success)
 	}
 }
 
-void Kinect::calculateHistogram(const XnDepthPixel *depth_pixels)
+void Kinect::calculateHistogram(int resolutionX, int resolutionY, const XnDepthPixel *depth_pixels)
 {
 	int numPoints = 0;
 
-	const int resolutionX = _frame.res.X;
-	const int resolutionY = _frame.res.Y;
-	unsigned int *histogram = _frame.histogram;
+	unsigned int *histogram = _histogram;
 
 	memset((void *)histogram, 0x0, MAX_DEPTH * sizeof(unsigned int));
 
@@ -317,7 +322,43 @@ void Kinect::calculateHistogram(const XnDepthPixel *depth_pixels)
 	}
 }
 
-void Kinect::renderDepthFrame()
+void Kinect::renderImage(unsigned char *buffer, int pitch)
+{
+	xn::ImageMetaData imageMD;
+	const XnUInt8 *image  = NULL;
+
+	if (buffer == 0 || !_gotImage)
+		return;
+
+	_image.GetMetaData(imageMD);
+	image = imageMD.Data();
+
+	const int resX = imageMD.XRes();
+	const int resY = imageMD.YRes();
+
+	const int bpp = FORMAT_BPP[_renderFormat];
+
+	pitch = pitch ? (pitch - resX) * bpp : 0;
+
+	if (pitch == 0 && _renderFormat == RENDER_RGB)
+	{
+		memcpy(buffer, image, resX * resY * bpp);
+		return;
+	}
+
+	unsigned char *dst = (unsigned char *)buffer;
+
+	for (int y = 0; y < resX; ++y, dst += pitch)
+		for (int x = 0; x < resY; ++x, dst += bpp, image += 3)
+		{
+			dst[0] = image[0];
+			dst[1] = image[1];
+			dst[2] = image[2];
+			dst[3] = 0xFF;
+		}
+}
+
+void Kinect::renderDepth(unsigned char *buffer, bool background, int pitch)
 {
 	static const int COLOR_COUNT = 7;
 	static const unsigned char COLORS[COLOR_COUNT][3] = 
@@ -333,48 +374,52 @@ void Kinect::renderDepthFrame()
 
 	assert(_init);
 
-	unsigned int *histogram = _frame.histogram;
-	unsigned int *dst = (unsigned int *)_frame.buffer;
+	if (buffer == 0)
+		return;
 
-	if (dst != 0)
+	unsigned int *histogram = _histogram;
+	unsigned char *dst = (unsigned char *)buffer;
+
+	xn::SceneMetaData sceneMD;
+	_userGen.GetUserPixels(0, sceneMD);
+
+	xn::DepthMetaData depthMD;
+	_depth.GetMetaData(depthMD);
+
+    const XnDepthPixel *depthPixels = depthMD.Data();
+	const XnLabel *labelPixels = sceneMD.Data();
+
+	const int resolutionX = depthMD.XRes();
+	const int resolutionY = depthMD.YRes();
+
+	const int bpp = FORMAT_BPP[_renderFormat];
+
+	const unsigned char bg_masks[2] = {0x0, 0xFF};
+	const unsigned char force_mask = background ? 0xFF : 0x0;
+
+	pitch = pitch ? (pitch - resolutionX) * bpp : 0;
+
+	calculateHistogram(resolutionX, resolutionY, depthPixels);
+
+	for (int y = 0; y < resolutionY; y++)
 	{
-    	xn::SceneMetaData sceneMD;
-    	_userGen.GetUserPixels(0, sceneMD);
-
-		const XnDepthPixel *depthPixels = _depth.GetDepthMap();
-		const XnLabel *labelPixels = sceneMD.Data();
-
-    	const int resolutionX = _frame.res.X;
-    	const int resolutionY = _frame.res.Y;
-    	const int pitch = _frame.pitch / 4; // 4 BPP
-
-		calculateHistogram(depthPixels);
-
-		for (int y = 0; y < resolutionY; y++)
+		for (int x = 0; x < resolutionX; x++)
 		{
-			for (int x = 0; x < resolutionX; x++)
-			{
-				*dst = 0x0;
+            unsigned int val = *depthPixels++ & DEPTH_MASK;
+            int c = *labelPixels++ % COLOR_COUNT;
 
-				if (_frame.renderMode == RENDER_DEPTH_FRAME || *labelPixels != 0)
-				{
-					unsigned char *pixel = (unsigned char *)dst;
-					unsigned int val = *depthPixels & DEPTH_MASK;
-					int c = *labelPixels % COLOR_COUNT;
+			unsigned char mask = bg_masks[(int)(c > 0)] | force_mask;
+			unsigned char pixel = histogram[val] & mask;
+            
+            dst[0] = pixel & COLORS[c][0];
+            dst[1] = pixel & COLORS[c][1];
+            dst[2] = pixel & COLORS[c][2];
+            dst[3] = mask;
 
-					pixel[0] = histogram[val] & COLORS[c][0];
-					pixel[1] = histogram[val] & COLORS[c][1];
-					pixel[2] = histogram[val] & COLORS[c][2];
-					pixel[3] = 255;
-				}
-
-				labelPixels++;
-				depthPixels++;
-				dst++;
-			}
-
-			dst += (pitch - resolutionX);
+			dst += bpp;
 		}
+
+		dst += pitch;
 	}
 }
 
@@ -393,11 +438,6 @@ void Kinect::updateUserData(XnUserID id, Kinect_UserData *data)
 int Kinect::userStatus(XnUserID id)
 {
 	return (id < MAX_USERS) ? _userStatus[id] : USER_INACTIVE;
-}
-
-void Kinect::setRenderMode(RenderingMode m)
-{
-	_frame.renderMode = m;
 }
 
 char const* Kinect::errorMessage()
@@ -438,32 +478,6 @@ void Kinect::setTicksPerSecond(int ticksPerSecond)
 	_tickTime = ticksPerSecond ? 1000 / ticksPerSecond : 0;
 }
 
-XnStatus Kinect::setRenderTarget(unsigned char *buffer, unsigned int size, int pitch)
-{
-	/* force rgba */
-	const int bpp = 4;
-
-	if (buffer == 0)
-	{
-		_frame.buffer = 0;
-		return XN_STATUS_OK;
-	}
-
-	_frame.pitch = pitch ? pitch : _frame.res.X * bpp;
-
-	if (_frame.pitch * _frame.res.Y > size)
-		return XN_STATUS_INTERNAL_BUFFER_TOO_SMALL;
-
-	_frame.buffer = (unsigned char *)buffer;
-	return XN_STATUS_OK;
-}
-
-const XnUInt32XYPair * Kinect::getFrameResolution()
-{
-	return &(_frame.res);
-}
-
-
 #ifdef _WIN32
 DWORD WINAPI _Kinect_Thread(LPVOID ptr)
 {
@@ -500,6 +514,68 @@ bool Kinect::isThreaded()
 {
 	return (_thread != 0);
 }
+#else
+XnStatus Kinect::runThreaded()
+{
+	return XN_STATUS_ERROR;
+}
+
+void Kinect::waitForThread(int timeout)
+{
+}
+
+void Kinect::stopThread()
+{
+}
+
+bool Kinect::isThreaded()
+{
+	return false;
+}
 #endif
+
+unsigned int Kinect::getImageTexSize(int pitch /*= 0*/)
+{
+	XnUInt32XYPair res = getImageResolution();
+	int bpp = FORMAT_BPP[_renderFormat];
+	return pitch ? (pitch * res.Y * bpp) : (res.X * res.Y * bpp);
+}
+
+unsigned int Kinect::getDepthTexSize(int pitch /*= 0*/)
+{
+	XnUInt32XYPair res = getDepthResolution();
+	int bpp = FORMAT_BPP[_renderFormat];
+	return pitch ? (pitch * res.Y * bpp) : (res.X * res.Y * bpp);
+}
+
+XnUInt32XYPair Kinect::getDepthResolution()
+{
+	XnMapOutputMode output;
+	XnUInt32XYPair resolution;
+
+	_depth.GetMapOutputMode(output);
+	resolution.X = output.nXRes;
+	resolution.Y = output.nYRes;
+
+	return resolution;
+}
+
+XnUInt32XYPair Kinect::getImageResolution()
+{
+	XnMapOutputMode output;
+	XnUInt32XYPair resolution;
+
+	_image.GetMapOutputMode(output);
+	resolution.X = output.nXRes;
+	resolution.Y = output.nYRes;
+
+	return resolution;
+}
+
+void Kinect::setRenderFormat(RenderFormat format)
+{
+	_renderFormat = format;
+}
+
 
 
