@@ -32,9 +32,19 @@
 static const int JOINT_COUNT = 25;
 struct Kinect_UserData
 {
-    XnSkeletonJointTransformation world_joints[JOINT_COUNT];
-    XnPoint3D screen_joints[JOINT_COUNT];
-    XnPoint3D world_com;
+	int status;
+
+	struct
+	{
+		XnSkeletonJointTransformation joints[JOINT_COUNT];
+        XnPoint3D centerOfMass;
+	} world;
+
+	struct
+	{
+        XnPoint3D joints[JOINT_COUNT];
+        XnPoint3D centerOfMass;
+	} screen;
 };
 #endif
 
@@ -117,7 +127,6 @@ private:
     void onCalibrationStart(XnUserID nId);
     void onCalibrationEnd(XnUserID nId, XnBool bSuccess);
 
-	int _userStatus[MAX_USERS];
 	Kinect_UserData *_userData[MAX_USERS];
 
     void updateUserData(XnUserID id, Kinect_UserData *data);
@@ -151,8 +160,15 @@ public:
 	XnStatus trackUser(XnUserID id = KINECT_DEFAULT_USER);
 	int userStatus(XnUserID id = KINECT_DEFAULT_USER);
 
-	const XnPoint3D *getJoint(int articulation, bool screen_position, XnUserID id = KINECT_DEFAULT_USER);
-	const XnPoint3D *getCoM(XnUserID id = KINECT_DEFAULT_USER);
+	const XnPoint3D *getJoint(int articulation, bool projected, XnUserID id = KINECT_DEFAULT_USER);
+	const XnPoint3D *getCoM(bool projected, XnUserID id = KINECT_DEFAULT_USER);
+
+	const Kinect_UserData *getUserData(XnUserID id = KINECT_DEFAULT_USER);
+
+	inline bool userActive(XnUserID id = KINECT_DEFAULT_USER)
+	{
+		return (id < MAX_USERS) && (_userData[id] != 0) && (_userData[id]->status != USER_INACTIVE);
+    }
 
 	void setEventCallback(Callback callback, void *userData);
 	char const* errorMessage();

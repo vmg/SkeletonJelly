@@ -53,10 +53,7 @@ Kinect::Kinect()
 #endif
 
 	for (int i = 0; i < MAX_USERS; ++i)
-	{
-		_userStatus[i] = USER_INACTIVE;
 		_userData[i] = 0;
-	}
 }
 
 Kinect::~Kinect()
@@ -159,8 +156,8 @@ void Kinect::tick()
 	// putchar('t');
 	_context.WaitAndUpdateAll();
 
-	for (int i = 0; i < MAX_USERS; ++i)
-		if (_userData[i] != 0)
+	for (int i = 1; i < MAX_USERS; ++i)
+		if (userActive(i))
 			updateUserData(i, _userData[i]);
 
 	int sleep_time = nextTick - GetTickCount();
@@ -170,11 +167,11 @@ void Kinect::tick()
 
 XnStatus Kinect::resetUser(XnUserID id /*= DEFAULT_USER*/)
 {
-	if (id < MAX_USERS && _userStatus[id] != USER_INACTIVE)
+	if (userActive(id))
 	{
     	_userGen.GetPoseDetectionCap().StopPoseDetection(id);
     	_userGen.GetSkeletonCap().Reset(id);
-		_userStatus[id] = USER_ACTIVE;
+		_userData[id]->status = USER_ACTIVE;
 		return XN_STATUS_OK;
 	}
 
@@ -183,15 +180,15 @@ XnStatus Kinect::resetUser(XnUserID id /*= DEFAULT_USER*/)
 
 XnStatus Kinect::trackUser(XnUserID id /*= DEFAULT_USER*/)
 {
-	if (id < MAX_USERS && _userStatus[id] != USER_INACTIVE)
+	if (userActive(id))
 	{
-    	if (_userStatus[id] != USER_ACTIVE)
+    	if (_userData[id]->status != USER_ACTIVE)
     		resetUser(id);
     
     	if (_needPose)
     	{
     		_userGen.GetPoseDetectionCap().StartPoseDetection(_calibrationPose, id);
-    		_userStatus[id] |= USER_LOOKING_FOR_POSE;
+    		_userData[id]->status |= USER_LOOKING_FOR_POSE;
     	}
     	else
     	{
@@ -208,8 +205,10 @@ void Kinect::onNewUser(XnUserID id)
 {
 	if (id < MAX_USERS)
 	{
-		_userStatus[id] = USER_ACTIVE;
-		_userData[id] = new Kinect_UserData;
+		if (_userData[id] == 0)
+    		_userData[id] = new Kinect_UserData;
+
+		_userData[id]->status = USER_ACTIVE;
 
 		if (_autoTrack)
 			trackUser(id);
@@ -221,11 +220,9 @@ void Kinect::onNewUser(XnUserID id)
 
 void Kinect::onLostUser(XnUserID id)
 {
-	if (id < MAX_USERS)
+	if (userActive(id))
 	{
-		_userStatus[id] = USER_INACTIVE;
-		delete _userData[id];
-		_userData[id] = 0;
+		_userData[id]->status = USER_INACTIVE;
 
 		if (_eventCallback != 0)
 			this->_eventCallback(this, CB_LOST_USER, id, _callbackData);
@@ -235,10 +232,10 @@ void Kinect::onLostUser(XnUserID id)
 
 void Kinect::onPoseDetected(const XnChar* strPose, XnUserID id)
 {
-	if (id < MAX_USERS)
+	if (userActive(id))
 	{
-		_userStatus[id] &= ~USER_LOOKING_FOR_POSE;
-		_userStatus[id] |= USER_GOT_POSE;
+		_userData[id]->status &= ~USER_LOOKING_FOR_POSE;
+		_userData[id]->status |= USER_GOT_POSE;
 
     	_userGen.GetPoseDetectionCap().StopPoseDetection(id);
     	_userGen.GetSkeletonCap().RequestCalibration(id, true);
@@ -250,9 +247,9 @@ void Kinect::onPoseDetected(const XnChar* strPose, XnUserID id)
 
 void Kinect::onCalibrationStart(XnUserID id)
 {
-	if (id < MAX_USERS)
+	if (userActive(id))
 	{
-		_userStatus[id] |= USER_CALIBRATING;
+		_userData[id]->status |= USER_CALIBRATING;
 
 		if (_eventCallback != 0)
 			this->_eventCallback(this, CB_CALIBRATION_START, id, _callbackData);
@@ -261,20 +258,20 @@ void Kinect::onCalibrationStart(XnUserID id)
 
 void Kinect::onCalibrationEnd(XnUserID id, XnBool success)
 {
-	if (id < MAX_USERS)
+	if (userActive(id))
 	{
     	if (success)
     	{
     		_userGen.GetSkeletonCap().StartTracking(id);
-    		_userStatus[id] &= ~USER_CALIBRATING;
-    		_userStatus[id] |= USER_TRACKING;
+    		_userData[id]->status &= ~USER_CALIBRATING;
+    		_userData[id]->status |= USER_TRACKING;
 
     		if (_eventCallback != 0)
     			this->_eventCallback(this, CB_CALIBRATION_SUCCESS, id, _callbackData);
     	}
     	else
     	{
-    		_userStatus[id] = USER_ACTIVE;
+    		_userData[id]->status = USER_ACTIVE;
 
     		if (_eventCallback != 0)
     			this->_eventCallback(this, CB_CALIBRATION_FAIL, id, _callbackData);
@@ -427,17 +424,19 @@ void Kinect::updateUserData(XnUserID id, Kinect_UserData *data)
 {
 	for (int i = 0; i < JOINT_COUNT; ++i) 
 	{
-		_userGen.GetSkeletonCap().GetSkeletonJoint(id, (XnSkeletonJoint)i, data->world_joints[i]);
-		memcpy(&data->screen_joints[i], &data->world_joints[i].position, sizeof(XnPoint3D));
+		_userGen.GetSkeletonCap().GetSkeletonJoint(id, (XnSkeletonJoint)i, data->world.joints[i]);
+		memcpy(&data->screen.joints[i], &data->world.joints[i].position, sizeof(XnPoint3D));
 	}
 
-	_depth.ConvertRealWorldToProjective(JOINT_COUNT, data->screen_joints, data->screen_joints);
-	_userGen.GetCoM(id, data->world_com);
+	_depth.ConvertRealWorldToProjective(JOINT_COUNT, data->screen.joints, data->screen.joints);
+
+	_userGen.GetCoM(id, data->world.centerOfMass);
+	_depth.ConvertRealWorldToProjective(1, &data->world.centerOfMass, &data->screen.centerOfMass);
 }
 
 int Kinect::userStatus(XnUserID id)
 {
-	return (id < MAX_USERS) ? _userStatus[id] : USER_INACTIVE;
+	return userActive(id) ? _userData[id]->status : USER_INACTIVE;
 }
 
 char const* Kinect::errorMessage()
@@ -445,23 +444,35 @@ char const* Kinect::errorMessage()
 	return (_error != XN_STATUS_OK) ? xnGetStatusString(_error) : 0;
 }
 
-const XnPoint3D *Kinect::getJoint(int joint, bool screen_position, XnUserID id)
+const XnPoint3D *Kinect::getJoint(int joint, bool projected, XnUserID id)
 {
-	if (id < MAX_USERS && _userStatus[id] != USER_INACTIVE)
+	if (userActive(id))
 	{
-		return screen_position ? 
-			&(_userData[id]->screen_joints[joint]) : 
-			&(_userData[id]->world_joints[joint].position.position);
+		return projected ? 
+			&(_userData[id]->screen.joints[joint]) : 
+			&(_userData[id]->world.joints[joint].position.position);
 	}
 
 	return 0;
 }
 
-const XnPoint3D *Kinect::getCoM(XnUserID id)
+const XnPoint3D *Kinect::getCoM(bool projected, XnUserID id)
 {
-	if (id < MAX_USERS && _userStatus[id] != USER_INACTIVE)
+	if (userActive(id))
 	{
-		return &(_userData[id]->world_com);
+		return projected ?
+			&(_userData[id]->screen.centerOfMass) :
+			&(_userData[id]->world.centerOfMass);
+	}
+
+	return 0;
+}
+
+const Kinect_UserData *Kinect::getUserData(XnUserID id /*= KINECT_DEFAULT_USER*/)
+{
+	if (userActive(id))
+	{
+		return _userData[id];
 	}
 
 	return 0;

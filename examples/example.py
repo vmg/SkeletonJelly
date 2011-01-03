@@ -30,12 +30,16 @@ def kinect_callback(cb_type, user_id):
         "Lost user",
         "Pose detected",
         "Calibration start",
-        "Calibration failed",
-        "Calibration success!"
+        "Calibration success!",
+        "Calibration failed"
     ]
     print "CB [User %d]: %s" % (user_id, messages[cb_type])
+    if cb_type == 4:
+        calibrated = True
+        print k.getCoM(True)
 
 if __name__ == '__main__':
+    calibrated = False
     k = skeletonjelly.Kinect()
 
     k.setEventCallback(kinect_callback)
