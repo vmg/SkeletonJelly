@@ -94,7 +94,7 @@ public:
 private:
 	static const int MAX_DEPTH = 4096;
 	static const int DEPTH_MASK = MAX_DEPTH - 1;
-	static const int MAX_USERS = 3;
+	static const unsigned int MAX_USERS = 3;
 
     friend void XN_CALLBACK_TYPE cb_newUser(xn::UserGenerator& generator, XnUserID nId, void *pCookie);
     friend void XN_CALLBACK_TYPE cb_lostUser(xn::UserGenerator& generator, XnUserID nId, void *pCookie);
@@ -150,7 +150,7 @@ public:
 	void tick();
 
 	XnStatus runThreaded();
-	void waitForThread(int timeout = INFINITE);
+	void waitForThread(int timeout);
 	void stopThread();
 	bool isThreaded();
 

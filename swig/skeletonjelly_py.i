@@ -27,9 +27,11 @@
 
 %typemap(in) unsigned char *buffer {
     PyObject *ctypes, *ptr;
+    const char *method = "addressof";
+    const char *arguments = "O";
 
     ctypes = PyImport_ImportModule("ctypes");
-    ptr = PyObject_CallMethod(ctypes, "addressof", "O", $input);
+    ptr = PyObject_CallMethod(ctypes, (char *)method, (char *)arguments, $input);
     if (ptr == NULL)
         return NULL;
 

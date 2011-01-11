@@ -7,18 +7,22 @@ SkeletonJelly setup file
 import os
 from distutils.core import setup, Extension
 
-OPENNI_LIB = os.environ['OPEN_NI_LIB']
-OPENNI_INC = os.environ['OPEN_NI_INCLUDE']
+try:
+    OPENNI_LIB = os.environ['OPEN_NI_LIB']
+    OPENNI_INC = os.environ['OPEN_NI_INCLUDE']
+except KeyError:
+    OPENNI_LIB = '/usr/lib'
+    OPENNI_INC = '/usr/include/ni'
 
 skj_mod = Extension('_skeletonjelly',
     sources=['src/skeletonjelly.cpp', 'swig/skeletonjelly.i'],
     include_dirs = [OPENNI_INC],
     library_dirs = [OPENNI_LIB],
-    libraries = ['openni'],
+    libraries = ['OpenNI'],
     language = 'c++',
     swig_opts=['-c++'],
-    extra_compile_args = ['/Zi', '/EHsc'],
-    extra_link_args = ['/DEBUG'],
+    #extra_compile_args = ['/Zi', '/EHsc'],
+    #extra_link_args = ['/DEBUG'],
 )
 
 setup(name = "skeletonjelly",

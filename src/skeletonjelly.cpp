@@ -52,7 +52,7 @@ Kinect::Kinect()
 	_thread = 0;
 #endif
 
-	for (int i = 0; i < MAX_USERS; ++i)
+	for (unsigned int i = 0; i < MAX_USERS; ++i)
 		_userData[i] = 0;
 }
 
@@ -60,7 +60,7 @@ Kinect::~Kinect()
 {
 	stopThread();
 
-	for (int i = 0; i < MAX_USERS; ++i)
+	for (unsigned int i = 0; i < MAX_USERS; ++i)
 		delete _userData[i];
 
 	_context.Shutdown();
@@ -149,20 +149,25 @@ XnStatus Kinect::init(SensorMode depthMode, SensorMode imageMode)
 	return XN_STATUS_OK;
 }
 
+
 void Kinect::tick()
 {
+#ifdef _WIN32
 	int nextTick = GetTickCount() + _tickTime;
+#endif
 
 	// putchar('t');
 	_context.WaitAndUpdateAll();
 
-	for (int i = 1; i < MAX_USERS; ++i)
+	for (unsigned int i = 1; i < MAX_USERS; ++i)
 		if (userActive(i))
 			updateUserData(i, _userData[i]);
 
+#ifdef _WIN32
 	int sleep_time = nextTick - GetTickCount();
 	if (sleep_time > 0)
 		Sleep(sleep_time);
+#endif
 }
 
 XnStatus Kinect::resetUser(XnUserID id /*= DEFAULT_USER*/)
