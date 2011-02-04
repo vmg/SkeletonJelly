@@ -1,9 +1,7 @@
-#include "kinect.hpp"
+#include "skeletonjelly.hpp"
 
 int main(int argc, char *argv[]) 
 {
-	static const char *default_path = "C:/Program Files (x86)/OpenNI/Data/SamplesConfig.xml";
-
 	Kinect k;
 
 	XnMapOutputMode output = {640, 480, 30};

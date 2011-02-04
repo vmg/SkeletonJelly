@@ -1,6 +1,6 @@
 #include <list>
-#include "GL/glut.h"
-#include "Gl/gl.h"
+#include "GLUT/glut.h"
+#include "OpenGL/gl.h"
 #include "../../src/skeletonjelly.hpp"
 
 #define WINDOW_X 800
@@ -18,21 +18,10 @@ Kinect g_kinect;
 
 char g_message[64] = {0};
 char g_coords[64] = {0};
+char g_leftHand[64] = {0};
+char g_rightHand[64] = {0};
 
-const Kinect_UserData *g_userData = NULL;
-
-#define TRACE_LENGTH 16
-std::list<XnPoint3D> g_traceLeft;
-std::list<XnPoint3D> g_traceRight;
-
-enum Scene
-{
-	SCENE_POSITION = 0,
-	SCENE_ARMS,
-	SCENE_MAX
-};
-
-Scene g_drawScene = SCENE_POSITION;
+const KinectUser *g_userData = NULL;
 
 static const char *MESSAGES[] =
 {
@@ -46,7 +35,7 @@ static const char *MESSAGES[] =
 
 void kinect_status(Kinect *k, Kinect::CallbackType cb_type, XnUserID id, void *data)
 {
-	sprintf_s(g_message, 64, "User [%d]: %s", id, MESSAGES[cb_type]);
+	snprintf(g_message, 64, "User [%d]: %s", id, MESSAGES[cb_type]);
 	printf("%s\n", g_message);
 
 	if (cb_type == Kinect::CB_NEW_USER && id == 1)
@@ -65,74 +54,16 @@ void glPrintString(void *font, char *str)
 	}
 }
 
-void drawPosition()
+void drawTracking()
 {
-	glOrtho(-ROOM_X / 2.0f, +ROOM_X / 2.0f, ROOM_Y, 0.0f, -1.0, 1.0);
-	glColor3f(1.0f, 1.0f, 1.0f);
-	glLineWidth(1.0f);
+	glOrtho(0, 1.0, 1.0, 0.0f, -1.0, 1.0);
 
-	glBegin(GL_LINES);
-
-	float x;
-
-	int rows = (ROOM_Y) / GRID_SIZE;
-	x = 0.0f;
-	for (int i = 0; i < rows; ++i) 
-	{
-		if (i & 1)
-			glColor4f(0.65, 0.65, 0.65, 0.5);
-		else
-        	glColor3f(1.0f, 1.0f, 1.0f);
-
-		glVertex2f(-ROOM_X, x);
-		glVertex2f(+ROOM_Y, x);
-		x += GRID_SIZE;
-	}
-
-	int cols = (ROOM_X) / GRID_SIZE;
-	x = -ROOM_X / 2;
-	for (int i = 0; i < cols; ++i) 
-	{
-		if (i & 1)
-			glColor4f(0.65, 0.65, 0.65, 0.5);
-		else
-        	glColor3f(1.0f, 1.0f, 1.0f);
-
-		glVertex2f(x, 0.0f);
-		glVertex2f(x, +ROOM_Y);
-		x += GRID_SIZE;
-	}
-
-	glEnd();
-
-	glColor3f(0.33, 0.33, 0.33);
-	glTranslatef(0.0f, 0.0f, 0.0f);
-	glutSolidSphere(0.2f, 16, 4);
+	glPointSize(16.0f);
+	glLineWidth(8.0f);
 
 	if (g_userData)
 	{
-		const XnPoint3D *p = &g_userData->world.centerOfMass;
-
-		glTranslatef(SCALE(p->X), SCALE(p->Z), 0.0f);
-
-    	glColor3f(0.66, 0.33, 0.33);
-		if (g_userData->status & Kinect::USER_TRACKING)
-        	glColor3f(0.33, 0.66, 0.33);
-
-    	glutSolidSphere(0.1f, 16, 4);
-		sprintf_s(g_coords, 64, "(%0.4f, %0.4f, %0.4f)\n", p->X, p->Y, p->Z);
-	}
-}
-
-void drawArms()
-{
-	XnUInt32XYPair resolution = g_kinect.getDepthResolution();
-	glOrtho(0, resolution.X, resolution.Y, 0.0f, -1.0, 1.0);
-	glPointSize(8.0f);
-
-	if (g_userData)
-	{
-		const XnPoint3D *com = &g_userData->screen.centerOfMass;
+		const XnPoint3D *com = &g_userData->centerOfMass;
 
     	glColor3f(0.66, 0.33, 0.33);
 		if (g_userData->status & Kinect::USER_TRACKING)
@@ -142,58 +73,66 @@ void drawArms()
 			glVertex3f(com->X, com->Y, 0.1f);
 		glEnd();
 
-		sprintf_s(g_coords, 64, "(%0.4f, %0.4f, %0.4f)\n", com->X, com->Y, com->Z);
+		snprintf(g_coords, 64, "CoM: (%0.4f, %0.4f, %0.4f)\n", com->X, com->Y, com->Z);
 
         if (g_kinect.userStatus() & Kinect::USER_TRACKING)
 		{
-			const XnPoint3D *joints = g_userData->screen.joints;
-			const XnPoint3D *leftHand = &g_userData->screen.joints[XN_SKEL_LEFT_HAND];
-			const XnPoint3D *rightHand = &g_userData->screen.joints[XN_SKEL_RIGHT_HAND];
+			const KinectUser::Hand *left = &g_userData->left;
+			const KinectUser::Hand *right = &g_userData->right;
 
-        	glColor3f(1.0f, 1.0f, 1.0f);
-        	glLineWidth(8.0f);
-			glBegin(GL_LINES);
-				glVertex3f(joints[XN_SKEL_LEFT_SHOULDER].X, joints[XN_SKEL_LEFT_SHOULDER].Y, 0.1f);
-				glVertex3f(joints[XN_SKEL_LEFT_ELBOW].X, joints[XN_SKEL_LEFT_ELBOW].Y, 0.1f);
-
-				glVertex3f(joints[XN_SKEL_LEFT_ELBOW].X, joints[XN_SKEL_LEFT_ELBOW].Y, 0.1f);
-				glVertex3f(joints[XN_SKEL_LEFT_HAND].X, joints[XN_SKEL_LEFT_HAND].Y, 0.1f);
-
-
-				glVertex3f(joints[XN_SKEL_RIGHT_SHOULDER].X, joints[XN_SKEL_RIGHT_SHOULDER].Y, 0.1f);
-				glVertex3f(joints[XN_SKEL_RIGHT_ELBOW].X, joints[XN_SKEL_RIGHT_ELBOW].Y, 0.1f);
-
-				glVertex3f(joints[XN_SKEL_RIGHT_ELBOW].X, joints[XN_SKEL_RIGHT_ELBOW].Y, 0.1f);
-				glVertex3f(joints[XN_SKEL_RIGHT_HAND].X, joints[XN_SKEL_RIGHT_HAND].Y, 0.1f);
-			glEnd();
-
-			if (g_traceLeft.empty() || g_traceLeft.back().X != leftHand->X || g_traceLeft.back().Y != leftHand->Y)
+			if (left->tracked)
 			{
-				g_traceLeft.push_back(*leftHand);
-				if (g_traceLeft.size() > TRACE_LENGTH)
-					g_traceLeft.pop_front();
-			}
+				snprintf(g_leftHand, 64, "Left: (%0.4f, %0.4f, %s) %f %s\n",
+						left->pos.X, left->pos.Y, 
+						left->pos.Z >= 0.8f ? "PUSH" : "-",
+						left->variance, 
+						left->variance <= 0.1f ? "IDLE" : "");
+				
+				glColor3f(1.0f, 1.0f, 1.0f);
+				glBegin(GL_POINTS);
+					glVertex3f(left->pos.X, left->pos.Y, 0.1f);
+				glEnd();
 
-			if (g_traceRight.empty() || g_traceRight.back().X != rightHand->X || g_traceRight.back().Y != rightHand->Y)
+				glColor4f(0.81, 0.72, 0.66, 0.33);
+				glLineWidth(4.0f);
+				std::list<XnPoint3D>::const_iterator it;
+
+				glBegin(GL_LINE_STRIP);
+				for (it = left->history.begin(); it != left->history.end(); ++it)
+					glVertex3f((*it).X, (*it).Y, 0.1f);
+				glEnd();
+			}
+			else
 			{
-				g_traceRight.push_back(*rightHand);
-				if (g_traceRight.size() > TRACE_LENGTH)
-					g_traceRight.pop_front();
+				snprintf(g_leftHand, 64, "Left: --");
 			}
+			
+			if (right->tracked)
+			{
+				snprintf(g_rightHand, 64, "Right: (%0.4f, %0.4f, %s) %f %s\n", 
+						right->pos.X, right->pos.Y, 
+						right->pos.Z >= 0.8f ? "PUSH" : "-",
+						right->variance,
+						right->variance <= 0.1f ? "IDLE" : "");
 
-			glColor4f(0.81, 0.72, 0.66, 0.33);
-        	glLineWidth(4.0f);
-			std::list<XnPoint3D>::iterator it;
+				glColor3f(1.0f, 1.0f, 1.0f);
+				glBegin(GL_POINTS);
+					glVertex3f(right->pos.X, right->pos.Y, 0.1f);
+				glEnd();
 
-			glBegin(GL_LINE_STRIP);
-			for (it = g_traceLeft.begin(); it != g_traceLeft.end(); ++it)
-				glVertex3f((*it).X, (*it).Y, 0.1f);
-			glEnd();
+				glColor4f(0.81, 0.72, 0.66, 0.33);
+				glLineWidth(4.0f);
+				std::list<XnPoint3D>::const_iterator it;
 
-			glBegin(GL_LINE_STRIP);
-			for (it = g_traceRight.begin(); it != g_traceRight.end(); ++it)
-				glVertex3f((*it).X, (*it).Y, 0.1f);
-			glEnd();
+				glBegin(GL_LINE_STRIP);
+				for (it = right->history.begin(); it != right->history.end(); ++it)
+					glVertex3f((*it).X, (*it).Y, 0.1f);
+				glEnd();
+			}
+			else
+			{
+				snprintf(g_rightHand, 64, "Right: --");
+			}
 		}
 	}
 }
@@ -214,6 +153,12 @@ void drawHUD()
 	glRasterPos2i(10, 30);
 	glPrintString(GLUT_BITMAP_HELVETICA_18, g_coords);
 
+	glRasterPos2i(10, 50);
+	glPrintString(GLUT_BITMAP_HELVETICA_18, g_leftHand);
+
+	glRasterPos2i(10, 70);
+	glPrintString(GLUT_BITMAP_HELVETICA_18, g_rightHand);
+
 	glEnable(GL_DEPTH_TEST); 
 	glPopMatrix();
 }
@@ -233,20 +178,7 @@ void glutDisplay()
 	glDisable(GL_DEPTH_TEST); 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	switch (g_drawScene)
-	{
-	case SCENE_POSITION:
-    	drawPosition();
-		break;
-
-	case SCENE_ARMS:
-		drawArms();
-		break;
-
-	default:
-		break;
-	}
-
+	drawTracking();
 	drawHUD();
 
 	glutSwapBuffers();
@@ -254,7 +186,14 @@ void glutDisplay()
 
 void glutIdle()
 {
+	static int time = 0;
+
+	int now = glutGet(GLUT_ELAPSED_TIME);
+
+	g_kinect.tick(now - time);
 	glutPostRedisplay();
+
+	time = now;
 }
 
 void glutKeyboard (unsigned char key, int x, int y)
@@ -263,10 +202,6 @@ void glutKeyboard (unsigned char key, int x, int y)
 	{
 	case 27:
 		exit(0);
-
-	case ' ':
-		g_drawScene = (Scene)(((int)g_drawScene + 1) % (int)SCENE_MAX);
-		break;
 	}
 }
 void glInit (int *pargc, char **argv)
@@ -274,8 +209,8 @@ void glInit (int *pargc, char **argv)
 	glutInit(pargc, argv);
 	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
 	glutInitWindowSize(WINDOW_X, WINDOW_Y);
-	glutCreateWindow ("Positioning Sample");
-	//glutFullScreen();
+	glutCreateWindow ("SkeletonJelly Debug");
+	glutFullScreen();
 	glutSetCursor(GLUT_CURSOR_NONE);
 
 	glutKeyboardFunc(glutKeyboard);
@@ -294,8 +229,8 @@ void glInit (int *pargc, char **argv)
 int main(int argc, char **argv)
 {
 	g_kinect.setEventCallback(kinect_status, NULL);
+	g_kinect.setTicksPerSecond(30);
 	g_kinect.init();
-	g_kinect.runThreaded();
 
 	glInit(&argc, argv);
 	glutMainLoop();

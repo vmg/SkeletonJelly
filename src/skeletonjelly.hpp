@@ -1,57 +1,49 @@
 #ifndef __IL_SKELETON_JELLY_H__
 #define __IL_SKELETON_JELLY_H__
 
+#include <list>
+
 #include <XnOpenNI.h>
 #include <XnCodecIDs.h>
 #include <XnCppWrapper.h>
-
-#if defined(JELLY_BUILD_DLL)
-#	if defined(__GNUC__)
-#		define DLL_PUBLIC __attribute__((dllexport))
-#	elif defined(_MSC_VER)
-#		define DLL_PUBLIC __declspec(dllexport)
-#	else
-#		define DLL_PUBLIC
-#	endif
-#else
-#	if defined(__GNUC__)
-#		define DLL_PUBLIC __attribute__((dllimport))
-#	elif defined(_MSC_VER)
-#		define DLL_PUBLIC __declspec(dllimport)
-#	else
-#		define DLL_PUBLIC
-#	endif
-#endif
 
 #define KINECT_DEFAULT_USER 1
 #define KINECT_DEFAULT_WIDTH 640
 #define KINECT_DEFAULT_HEIGHT 480
 #define KINECT_DEFAULT_FPS 30
+#define KINECT_JOINT_MAX 7
 
-#ifndef SWIG
-static const int JOINT_COUNT = 25;
-struct Kinect_UserData
+struct KinectUser
 {
 	int status;
 
-	struct
+	struct Hand
 	{
-		XnSkeletonJointTransformation joints[JOINT_COUNT];
-        XnPoint3D centerOfMass;
-	} world;
+		std::list<XnPoint3D> history;
+		XnPoint3D pos;
+		bool tracked;
+		float variance;
+	} left, right;
 
-	struct
-	{
-        XnPoint3D joints[JOINT_COUNT];
-        XnPoint3D centerOfMass;
-	} screen;
+	XnSkeletonJointPosition joints[KINECT_JOINT_MAX];
+	XnPoint3D centerOfMass;
 };
-#endif
 
 class Kinect
 {
 
 public:
+	enum Joints
+	{
+		JOINT_HEAD,
+		JOINT_HAND_LEFT,
+		JOINT_HAND_RIGHT,
+		JOINT_ELBOW_LEFT,
+		JOINT_ELBOW_RIGHT,
+		JOINT_SHOULDER_LEFT,
+		JOINT_SHOULDER_RIGHT
+	};
+
 	enum RenderFormat
 	{
 		RENDER_RGBA,
@@ -89,8 +81,6 @@ public:
 
 	typedef void (*Callback)(Kinect*, CallbackType, XnUserID, void*);
 
-
-#ifndef SWIG
 private:
 	static const int MAX_DEPTH = 4096;
 	static const int DEPTH_MASK = MAX_DEPTH - 1;
@@ -127,48 +117,43 @@ private:
     void onCalibrationStart(XnUserID nId);
     void onCalibrationEnd(XnUserID nId, XnBool bSuccess);
 
-	Kinect_UserData *_userData[MAX_USERS];
+	KinectUser *_userData[MAX_USERS];
 
-    void updateUserData(XnUserID id, Kinect_UserData *data);
+    void updateUserData(XnUserID id, KinectUser *data);
+	void processHand(KinectUser::Hand *hand, XnSkeletonJointPosition *jointWorld, float backPlane, float planeDepth, float xRes, float yRes);
 
 	Callback _eventCallback;
 	void *_callbackData;
 
+	int _elapsed;
 	int _tickTime;
-
-#	ifdef _WIN32
-	HANDLE _thread;
-#	endif
-
-#endif
 
 public:
 	Kinect();
 	~Kinect();
 
 	void setTicksPerSecond(int ticksPerSecond);
-	void tick();
-
-	XnStatus runThreaded();
-	void waitForThread(int timeout);
-	void stopThread();
-	bool isThreaded();
+	void tick(int elapsed);
 
 	XnStatus init(SensorMode depthSensor = SENSOR_VGA_30FPS, SensorMode imageSensor = SENSOR_DISABLED);
 
 	XnStatus resetUser(XnUserID id = KINECT_DEFAULT_USER);
 	XnStatus trackUser(XnUserID id = KINECT_DEFAULT_USER);
-	int userStatus(XnUserID id = KINECT_DEFAULT_USER);
 
-	const XnPoint3D *getJoint(int articulation, bool projected, XnUserID id = KINECT_DEFAULT_USER);
-	const XnPoint3D *getCoM(bool projected, XnUserID id = KINECT_DEFAULT_USER);
-
-	const Kinect_UserData *getUserData(XnUserID id = KINECT_DEFAULT_USER);
+	inline int userStatus(XnUserID id = KINECT_DEFAULT_USER)
+	{
+		return userActive(id) ? _userData[id]->status : USER_INACTIVE;
+	}
 
 	inline bool userActive(XnUserID id = KINECT_DEFAULT_USER)
 	{
 		return (id < MAX_USERS) && (_userData[id] != 0) && (_userData[id]->status != USER_INACTIVE);
     }
+
+	inline const KinectUser *getUserData(XnUserID id)
+	{
+		return userActive(id) ? _userData[id] : 0;
+	}
 
 	void setEventCallback(Callback callback, void *userData);
 	char const* errorMessage();
@@ -184,5 +169,7 @@ public:
 
 	void setRenderFormat(RenderFormat format);
 };
+
+
 
 #endif

@@ -48,9 +48,7 @@ Kinect::Kinect()
 	_eventCallback = 0;
 	_callbackData = 0;
 
-#ifdef _WIN32
-	_thread = 0;
-#endif
+	_elapsed = 0;
 
 	for (unsigned int i = 0; i < MAX_USERS; ++i)
 		_userData[i] = 0;
@@ -58,8 +56,6 @@ Kinect::Kinect()
 
 Kinect::~Kinect()
 {
-	stopThread();
-
 	for (unsigned int i = 0; i < MAX_USERS; ++i)
 		delete _userData[i];
 
@@ -139,7 +135,8 @@ XnStatus Kinect::init(SensorMode depthMode, SensorMode imageMode)
     		_userGen.GetSkeletonCap().GetCalibrationPose(_calibrationPose);
     	}
     
-    	_userGen.GetSkeletonCap().SetSkeletonProfile(XN_SKEL_PROFILE_ALL);
+		/* TODO: XN_SKEL_PROFILE_HEAD_HANDS  ? */
+    	_userGen.GetSkeletonCap().SetSkeletonProfile(XN_SKEL_PROFILE_UPPER);
 	}
 
 	_error = _context.StartGeneratingAll();
@@ -150,24 +147,19 @@ XnStatus Kinect::init(SensorMode depthMode, SensorMode imageMode)
 }
 
 
-void Kinect::tick()
+void Kinect::tick(int elapsed)
 {
-#ifdef _WIN32
-	int nextTick = GetTickCount() + _tickTime;
-#endif
-
-	// putchar('t');
+	_elapsed += elapsed;
 	_context.WaitAndUpdateAll();
 
-	for (unsigned int i = 1; i < MAX_USERS; ++i)
-		if (userActive(i))
-			updateUserData(i, _userData[i]);
+	if (_elapsed >= _tickTime)
+	{
+		for (unsigned int i = 1; i < MAX_USERS; ++i)
+			if (userActive(i))
+				updateUserData(i, _userData[i]);
 
-#ifdef _WIN32
-	int sleep_time = nextTick - GetTickCount();
-	if (sleep_time > 0)
-		Sleep(sleep_time);
-#endif
+		_elapsed -= _tickTime;
+	}
 }
 
 XnStatus Kinect::resetUser(XnUserID id /*= DEFAULT_USER*/)
@@ -211,7 +203,7 @@ void Kinect::onNewUser(XnUserID id)
 	if (id < MAX_USERS)
 	{
 		if (_userData[id] == 0)
-    		_userData[id] = new Kinect_UserData;
+    		_userData[id] = new KinectUser;
 
 		_userData[id]->status = USER_ACTIVE;
 
@@ -425,62 +417,98 @@ void Kinect::renderDepth(unsigned char *buffer, bool background, int pitch)
 	}
 }
 
-void Kinect::updateUserData(XnUserID id, Kinect_UserData *data)
+void Kinect::processHand(KinectUser::Hand *hand, XnSkeletonJointPosition *jointWorld, float backPlane, float planeDepth, float xRes, float yRes)
 {
-	for (int i = 0; i < JOINT_COUNT; ++i) 
+	static const int max_history = 30;
+	static const int static_time_steps = 8;
+
+	_depth.ConvertRealWorldToProjective(1, &jointWorld->position, &hand->pos);
+
+	hand->pos.X /= xRes;
+	hand->pos.Y /= yRes;
+	hand->pos.Z = (backPlane - jointWorld->position.Z) / (planeDepth);
+
+	hand->tracked = jointWorld->fConfidence >= 0.5f;
+
+	hand->history.push_back(hand->pos);
+	if (hand->history.size() > max_history)
+		hand->history.pop_front();
+
+	if (hand->history.size() > static_time_steps)
 	{
-		_userGen.GetSkeletonCap().GetSkeletonJoint(id, (XnSkeletonJoint)i, data->world.joints[i]);
-		memcpy(&data->screen.joints[i], &data->world.joints[i].position, sizeof(XnPoint3D));
+		std::list<XnPoint3D>::reverse_iterator it;
+		float sumX = 0.0f, sumY = 0.0f, avgX, avgY, varX, varY;
+		int i;
+
+		for (it = hand->history.rbegin(), i = 0;
+			i < static_time_steps; ++it, ++i)
+		{
+			sumX += (*it).X;
+			sumY += (*it).Y;
+		}
+
+		avgX = sumX / static_time_steps;
+		avgY = sumY / static_time_steps;
+		sumX = 0.0f;
+		sumY = 0.0f;
+
+		for (it = hand->history.rbegin(), i = 0;
+			i < static_time_steps; ++it, ++i)
+		{
+			sumX += (avgX - (*it).X) * (avgX - (*it).X);
+			sumY += (avgY - (*it).Y) * (avgY - (*it).Y);
+		}
+
+		varX = sumX / (static_time_steps - 1.0f);
+		varY = sumY / (static_time_steps - 1.0f);
+
+		hand->variance = (varX + varY) * 1000.0f;
 	}
-
-	_depth.ConvertRealWorldToProjective(JOINT_COUNT, data->screen.joints, data->screen.joints);
-
-	_userGen.GetCoM(id, data->world.centerOfMass);
-	_depth.ConvertRealWorldToProjective(1, &data->world.centerOfMass, &data->screen.centerOfMass);
 }
 
-int Kinect::userStatus(XnUserID id)
+void Kinect::updateUserData(XnUserID id, KinectUser *data)
 {
-	return userActive(id) ? _userData[id]->status : USER_INACTIVE;
+	static XnSkeletonJoint jointTranslation[] =
+	{
+		XN_SKEL_HEAD, /* JOINT_HEAD, */
+		XN_SKEL_LEFT_HAND,  /* JOINT_HAND_LEFT, */
+		XN_SKEL_RIGHT_HAND, /* JOINT_HAND_RIGHT */
+		XN_SKEL_LEFT_ELBOW, /* JOINT_ELBOW_LEFT, */
+		XN_SKEL_RIGHT_ELBOW, /* JOINT_ELBOW_RIGHT, */
+		XN_SKEL_LEFT_SHOULDER, /* JOINT_SHOULDER_LEFT, */
+		XN_SKEL_RIGHT_SHOULDER, /* JOINT_SHOULDER_RIGHT, */
+	};
+
+	static const float planeDepth = 500.0f;
+
+	float backPlane, frontPlane;
+	XnUInt32XYPair resolution = getDepthResolution();
+
+	if (data->status & USER_TRACKING)
+	{
+		for (int i = 0; i < KINECT_JOINT_MAX; ++i) 
+			_userGen.GetSkeletonCap().GetSkeletonJointPosition(id, jointTranslation[i], data->joints[i]);
+
+		backPlane = (data->joints[JOINT_SHOULDER_LEFT].position.Z +
+					 data->joints[JOINT_SHOULDER_RIGHT].position.Z) / 2.0f;
+
+		processHand(&data->left, &data->joints[JOINT_HAND_LEFT],
+				backPlane, planeDepth, (float)resolution.X, (float)resolution.Y);
+
+		processHand(&data->right, &data->joints[JOINT_HAND_RIGHT],
+				backPlane, planeDepth, (float)resolution.X, (float)resolution.Y);
+	}
+
+	_userGen.GetCoM(id, data->centerOfMass);
+	_depth.ConvertRealWorldToProjective(1, &data->centerOfMass, &data->centerOfMass);
+
+	data->centerOfMass.X /= (float)resolution.X;
+	data->centerOfMass.Y /= (float)resolution.Y;
 }
 
 char const* Kinect::errorMessage()
 {
 	return (_error != XN_STATUS_OK) ? xnGetStatusString(_error) : 0;
-}
-
-const XnPoint3D *Kinect::getJoint(int joint, bool projected, XnUserID id)
-{
-	if (userActive(id))
-	{
-		return projected ? 
-			&(_userData[id]->screen.joints[joint]) : 
-			&(_userData[id]->world.joints[joint].position.position);
-	}
-
-	return 0;
-}
-
-const XnPoint3D *Kinect::getCoM(bool projected, XnUserID id)
-{
-	if (userActive(id))
-	{
-		return projected ?
-			&(_userData[id]->screen.centerOfMass) :
-			&(_userData[id]->world.centerOfMass);
-	}
-
-	return 0;
-}
-
-const Kinect_UserData *Kinect::getUserData(XnUserID id /*= KINECT_DEFAULT_USER*/)
-{
-	if (userActive(id))
-	{
-		return _userData[id];
-	}
-
-	return 0;
 }
 
 void Kinect::setEventCallback(Callback callback, void *userData)
@@ -493,62 +521,6 @@ void Kinect::setTicksPerSecond(int ticksPerSecond)
 {
 	_tickTime = ticksPerSecond ? 1000 / ticksPerSecond : 0;
 }
-
-#ifdef _WIN32
-DWORD WINAPI _Kinect_Thread(LPVOID ptr)
-{
-	Kinect *k = (Kinect *)ptr;
-	for (;;) k->tick();
-	return 0;
-}
-
-XnStatus Kinect::runThreaded()
-{
-	_thread = CreateThread(NULL, 0, _Kinect_Thread, (void *)this, 0, 0);
-	return (_thread != 0) ? XN_STATUS_OK : XN_STATUS_OS_INVALID_THREAD;
-}
-
-void Kinect::waitForThread(int timeout)
-{
-	if (_thread != 0)
-	{
-		if (WaitForSingleObject(_thread, timeout) == 0)
-			_thread = 0;
-	}
-}
-
-void Kinect::stopThread()
-{
-	if (_thread != 0)
-	{
-    	TerminateThread(_thread, 0);
-		_thread = 0;
-	}
-}
-
-bool Kinect::isThreaded()
-{
-	return (_thread != 0);
-}
-#else
-XnStatus Kinect::runThreaded()
-{
-	return XN_STATUS_ERROR;
-}
-
-void Kinect::waitForThread(int timeout)
-{
-}
-
-void Kinect::stopThread()
-{
-}
-
-bool Kinect::isThreaded()
-{
-	return false;
-}
-#endif
 
 unsigned int Kinect::getImageTexSize(int pitch /*= 0*/)
 {
